@@ -4,17 +4,17 @@
 #include <cstdint>
 #include <algorithm>
 #include <cstdio>
-#include <hip/hip_runtime.h>  
+#include <hip/hip_runtime.h>  // 已替换为 HIP 头文件
 
 constexpr int IVF_GPU_NLIST = 256;
 constexpr int IVF_GPU_TRAIN_ITER = 10;
 constexpr int IVF_GPU_TRAIN_POINT = 8192;
 constexpr int IVF_GPU_BATCH = 64;
-constexpr int IVF_GPU_BLOCK = 256;
+static int IVF_GPU_BLOCK = 256; // 改为 static 变量，方便在 main.cpp 中动态扫参调优
 
-inline void ivf_gpu_check(hipError_t err){  
-    if(err!=hipSuccess){  
-        printf("HIP error: %s\n", hipGetErrorString(err));  
+inline void ivf_gpu_check(hipError_t err){ // 已替换为 hipError_t
+    if(err!=hipSuccess){ // 已替换为 hipSuccess
+        printf("HIP error: %s\n", hipGetErrorString(err)); // 已替换
     }
 }
 
@@ -82,11 +82,11 @@ struct IVFGPUGroupIndex{
 
     void release(){
         if(d_base!=nullptr){
-            hipFree(d_base); 
+            hipFree(d_base); // 已替换为 hipFree
             d_base = nullptr;
         }
         if(d_list_ids!=nullptr){
-            hipFree(d_list_ids); 
+            hipFree(d_list_ids); // 已替换
             d_list_ids = nullptr;
         }
         ready = false;
@@ -192,13 +192,13 @@ struct IVFGPUGroupIndex{
             for(size_t i=0;i<lists[c].size();i++) list_ids.push_back(lists[c][i]);
         }
 
-        if(d_base!=nullptr) hipFree(d_base);
-        if(d_list_ids!=nullptr) hipFree(d_list_ids);
+        if(d_base!=nullptr) hipFree(d_base); // 已替换
+        if(d_list_ids!=nullptr) hipFree(d_list_ids); // 已替换
 
-        ivf_gpu_check(hipMalloc((void**)&d_base, sizeof(float) * base_num * dim)); 
-        ivf_gpu_check(hipMemcpy(d_base, base, sizeof(float) * base_num * dim, hipMemcpyHostToDevice)); 
-        ivf_gpu_check(hipMalloc((void**)&d_list_ids, sizeof(uint32_t) * list_ids.size()));
-        ivf_gpu_check(hipMemcpy(d_list_ids, list_ids.data(), sizeof(uint32_t) * list_ids.size(), hipMemcpyHostToDevice)); 
+        ivf_gpu_check(hipMalloc((void**)&d_base, sizeof(float) * base_num * dim)); // 已替换
+        ivf_gpu_check(hipMemcpy(d_base, base, sizeof(float) * base_num * dim, hipMemcpyHostToDevice)); // 已替换
+        ivf_gpu_check(hipMalloc((void**)&d_list_ids, sizeof(uint32_t) * list_ids.size())); // 已替换
+        ivf_gpu_check(hipMemcpy(d_list_ids, list_ids.data(), sizeof(uint32_t) * list_ids.size(), hipMemcpyHostToDevice)); // 已替换
         ready = true;
     }
 
@@ -215,54 +215,87 @@ struct IVFGPUGroupIndex{
         float* d_dist = nullptr;
 
         size_t max_batch = (size_t)batch_size;
-        ivf_gpu_check(hipMalloc((void**)&d_query, sizeof(float) * max_batch * dim));
-        ivf_gpu_check(hipMalloc((void**)&d_group_qid, sizeof(int) * max_batch)); 
+        ivf_gpu_check(hipMalloc((void**)&d_query, sizeof(float) * max_batch * dim)); // 已替换
+        ivf_gpu_check(hipMalloc((void**)&d_group_qid, sizeof(int) * max_batch * (size_t)nprobe)); // 已替换
 
         int max_list = 0;
         for(int c=0;c<nlist;c++) max_list = std::max(max_list, list_size[c]);
-        ivf_gpu_check(hipMalloc((void**)&d_dist, sizeof(float) * max_batch * (size_t)std::max(1, max_list))); 
+        ivf_gpu_check(hipMalloc((void**)&d_dist, sizeof(float) * max_batch * (size_t)std::max(1, max_list))); // 已替换
 
-        std::vector<std::vector<int> > groups(nlist);
+        std::vector<int> group_count(nlist);
+        std::vector<int> group_offset(nlist + 1);
+        std::vector<int> group_write(nlist);
+        std::vector<int> probe_ids(max_batch * (size_t)nprobe);
+        std::vector<int> group_qid(max_batch * (size_t)nprobe);
+        std::vector<float> best_dis(nprobe);
+        std::vector<int> best_id(nprobe);
         std::vector<float> h_dist(max_batch * (size_t)std::max(1, max_list));
 
         for(size_t begin=0;begin<query_number;begin+=max_batch){
             size_t cur_batch = std::min(max_batch, query_number - begin);
-            ivf_gpu_check(hipMemcpy(d_query, query + begin * dim, sizeof(float) * cur_batch * dim, hipMemcpyHostToDevice)); 
+            ivf_gpu_check(hipMemcpy(d_query, query + begin * dim, sizeof(float) * cur_batch * dim, hipMemcpyHostToDevice)); // 已替换
 
-            for(int c=0;c<nlist;c++) groups[c].clear();
+            std::fill(group_count.begin(), group_count.end(), 0);
 
             for(size_t qi=0;qi<cur_batch;qi++){
-                std::priority_queue<ivf_gpu_t> coarse_q;
                 float* cur_query = query + (begin + qi) * dim;
+
+                for(int p=0;p<nprobe;p++){
+                    best_dis[p] = 1e30f;
+                    best_id[p] = 0;
+                }
+                int worst = 0;
+
                 for(int c=0;c<nlist;c++){
                     float dis = ivf_gpu_l2_cal(cur_query, centroids.data() + (size_t)c * dim, dim);
-                    if(coarse_q.size()<(size_t)nprobe) coarse_q.push({dis, (uint32_t)c});
-                    else if(dis<coarse_q.top().d){
-                        coarse_q.pop();
-                        coarse_q.push({dis, (uint32_t)c});
+                    if(dis < best_dis[worst]){
+                        best_dis[worst] = dis;
+                        best_id[worst] = c;
+                        worst = 0;
+                        for(int p=1;p<nprobe;p++){
+                            if(best_dis[p] > best_dis[worst]) worst = p;
+                        }
                     }
                 }
-                while(!coarse_q.empty()){
-                    groups[coarse_q.top().id].push_back((int)qi);
-                    coarse_q.pop();
+
+                for(int p=0;p<nprobe;p++){
+                    int cid = best_id[p];
+                    probe_ids[qi * (size_t)nprobe + p] = cid;
+                    group_count[cid]++;
                 }
             }
 
+            group_offset[0] = 0;
             for(int c=0;c<nlist;c++){
-                int gsize = (int)groups[c].size();
+                group_offset[c + 1] = group_offset[c] + group_count[c];
+                group_write[c] = group_offset[c];
+            }
+
+            int total_probe = group_offset[nlist];
+            for(size_t qi=0;qi<cur_batch;qi++){
+                for(int p=0;p<nprobe;p++){
+                    int cid = probe_ids[qi * (size_t)nprobe + p];
+                    group_qid[group_write[cid]++] = (int)qi;
+                }
+            }
+
+            if(total_probe>0){
+                ivf_gpu_check(hipMemcpy(d_group_qid, group_qid.data(), sizeof(int) * total_probe, hipMemcpyHostToDevice)); // 已替换
+            }
+
+            for(int c=0;c<nlist;c++){
+                int gsize = group_count[c];
                 int lsize = list_size[c];
                 if(gsize==0 || lsize==0) continue;
 
-                ivf_gpu_check(hipMemcpy(d_group_qid, groups[c].data(), sizeof(int) * gsize, hipMemcpyHostToDevice));
                 int total = gsize * lsize;
                 int grid = (total + IVF_GPU_BLOCK - 1) / IVF_GPU_BLOCK;
                 ivf_gpu_group_scan_kernel<<<grid, IVF_GPU_BLOCK>>>(d_base, d_query,
-                    d_list_ids + list_offset[c], d_group_qid, d_dist, lsize, gsize, dim);
-                ivf_gpu_check(hipDeviceSynchronize()); 
-                ivf_gpu_check(hipMemcpy(h_dist.data(), d_dist, sizeof(float) * total, hipMemcpyDeviceToHost)); 
+                    d_list_ids + list_offset[c], d_group_qid + group_offset[c], d_dist, lsize, gsize, dim);
+                ivf_gpu_check(hipMemcpy(h_dist.data(), d_dist, sizeof(float) * total, hipMemcpyDeviceToHost)); // 已替换
 
                 for(int gi=0;gi<gsize;gi++){
-                    int qi = groups[c][gi];
+                    int qi = group_qid[group_offset[c] + gi];
                     std::priority_queue<std::pair<float, uint32_t> >& q = ans[begin + qi];
                     for(int j=0;j<lsize;j++){
                         float dis = h_dist[(size_t)gi * lsize + j];
@@ -278,9 +311,9 @@ struct IVFGPUGroupIndex{
             }
         }
 
-        hipFree(d_query); 
-        hipFree(d_group_qid); 
-        hipFree(d_dist); 
+        hipFree(d_query); // 已替换
+        hipFree(d_group_qid); // 已替换
+        hipFree(d_dist); // 已替换
         return ans;
     }
 
@@ -305,7 +338,7 @@ ivf_gpu_group_search_batch(float* base, float* query, size_t base_number, size_t
 }
 
 inline std::priority_queue<std::pair<float, uint32_t> >
-gpu_flat_search(float* base, float* query, size_t base_number, size_t vecdim, size_t k, int nprobe){ 
+gpu_flat_search(float* base, float* query, size_t base_number, size_t vecdim, size_t k, int nprobe){
     if(!g_ivf_gpu_group_index.ready || g_ivf_gpu_group_index.base_data!=base || g_ivf_gpu_group_index.base_num!=base_number || g_ivf_gpu_group_index.dim!=(int)vecdim){
         g_ivf_gpu_group_index.train(base, base_number, vecdim);
     }
