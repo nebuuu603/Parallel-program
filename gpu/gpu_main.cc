@@ -50,7 +50,7 @@ int main(int argc, char *argv[])
     const size_t k = 10;
 
     int fixed_nlist = 256;
-    int fixed_nprobe = 16;
+    int fixed_nprobe = 10;
 
     std::cerr << "Training GPU IVF Index (nlist=" << fixed_nlist << ")..." << endl;
     ivf_gpu_group_train(base, base_number, vecdim, fixed_nlist);
